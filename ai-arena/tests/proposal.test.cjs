@@ -1,0 +1,4 @@
+const test=require('node:test'),assert=require('node:assert/strict'),{validate}=require('../validate-proposal.cjs');
+function sample(){return {schemaVersion:'1.0',family:'GPT',displayName:'协议斗士',archetype:'近战',designReason:'近身获得优势',weaknesses:['远程薄弱'],moves:[{id:'special',mechanism:'melee',startupFrames:13,activeFrames:7,recoveryFrames:26,damageFraction:.13,energyCost:25,rangeUnits:150,hitStunFrames:27,blockStunFrames:0,hitbox:{offsetX:13,offsetY:-113,width:150,height:78},allowedCancelInto:['super'],counterplay:'防住后惩罚后摇'}]}}
+test('model proposal within bounds passes candidate validation',()=>assert.deepEqual(validate(sample()),[]));
+test('overpowered, nonfinite or unsupported model proposals are rejected',()=>{let p=sample();p.moves[0].damageFraction=.9;p.moves[0].energyCost=0;p.moves[0].mechanism='execute_script';assert.ok(validate(p).length>=3);p=sample();p.moves[0].startupFrames=null;assert.ok(validate(p).length>0)});
