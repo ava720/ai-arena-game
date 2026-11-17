@@ -86,7 +86,7 @@ function buildGamepad(mode) {
         <button class="pad-btn" data-action="left">←</button>
         <button class="pad-btn" data-action="right">→</button>
         <button class="pad-btn" data-action="down">蹲</button>
-        <button class="pad-btn" data-action="jump">跳</button>
+        <button class="pad-btn" data-action="jump">跳 / 受身</button><button class="pad-btn" data-action="run">跑</button>
       </div>
       <div class="pad-right">
         <button class="pad-btn" data-action="light">轻击</button>
@@ -107,8 +107,8 @@ function buildGamepad(mode) {
       </div>
       <div class="pad-right">
         <button class="pad-btn wide" data-action="jump">跳跃</button>
-        <button class="pad-btn" data-action="dash">翻滚</button>
-        <button class="pad-btn wide" data-action="grab">推搡</button>
+        <button class="pad-btn" data-action="dash">滚动</button>
+        <button class="pad-btn wide" data-action="dive">飞扑</button><button class="pad-btn wide" data-action="grab">推搡</button>
       </div>
     `;
   }

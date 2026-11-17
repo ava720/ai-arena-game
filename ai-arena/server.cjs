@@ -4,12 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { Server } = require('socket.io');
-const F = require('./fight.js');
-const R = require('./race.js');
+const F = require('./fighter-engine.js');
+const R = require('./party-controller.js');
 const root = path.resolve(__dirname, '..');
 const rooms = new Map();
-const keys = ['left','right','up','down','jump','light','heavy','special','super','dash','guard','grab'];
-const actionKeys = keys.filter(k => !['left','right','up','down','guard'].includes(k));
+const keys = ['left','right','up','down','jump','light','heavy','special','super','dash','guard','grab','run','tech','dive'];
+const actionKeys = keys.filter(k => !['left','right','up','down','guard','run'].includes(k));
 const ids = new Set(F.characters.map(c => c.id));
 const MIME = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml','.ico':'image/x-icon'};
 const server = http.createServer((req, res) => {

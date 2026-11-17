@@ -37,7 +37,7 @@ class Buffer {
 }
 const STEP=1000/60;
 const clone=value=>typeof structuredClone==='function'?structuredClone(value):JSON.parse(JSON.stringify(value));
-const actions=['jump','light','heavy','special','super','dash','grab'];
+const actions=['jump','light','heavy','special','super','dash','grab','tech','dive'];
 // Predict locomotion/animation only. Damage, meter, hit effects and match results are
 // always copied from the authoritative presentation buffer, never from this clone.
 class Predictor {
@@ -60,7 +60,7 @@ class Predictor {
    else if(this.pulses[k]>0){own[k]=true;this.pulses[k]--;this.releases[k]=true;}
   }
   const inputs=[{},{}];inputs[this.slot]=own;
-  this.engine.step(state,inputs,this.mode==='fight'?this.slot:null);
+  this.engine.step(state,inputs,this.slot);
  }
  advance(now){
   if(this.last===null){this.last=now;return;}
@@ -118,7 +118,7 @@ class Predictor {
   }
   const key=this.mode==='fight'?'fighters':'players',authoritative=view[key][this.slot];
   const own={...authoritative};
-  const fields=this.mode==='fight'?['x','y','vx','vy','facing','action','actionFrame','guard','crouch','jumped']:['x','y','z','vx','vy','vz','dashTime'];
+  const fields=this.mode==='fight'?['x','y','vx','vy','facing','action','actionFrame','state','stateFrame','attackPhase','locomotion','guard','crouch','jumped']:['x','y','z','vx','vy','vz','dashTime','diveTime'];
   for(const k of fields)if(predicted[k]!==undefined)own[k]=predicted[k];
   for(const axis of ['x','y','z'])if(Number.isFinite(own[axis]))own[axis]+=this.offset[axis];
   this.visual={x:own.x,y:own.y,z:own.z};

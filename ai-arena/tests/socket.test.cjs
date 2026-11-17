@@ -23,6 +23,14 @@ test('WebSocket rooms, real-time inputs, pulses, pause/rejoin and leave',async()
  b.disconnect();await wait(100);let frame=sa.state.frame;await wait(100);assert.equal(sa.state.frame,frame);assert.equal(sa.disconnected,true);
  const rejoined=await connect();assert.ok((await emit(rejoined,'resume',{code:room.code,token:guest.token})).ok);await wait(100);assert.ok(sa.state.frame>frame);
  await emit(rejoined,'leave');await wait(60);assert.equal(sa.state,null);assert.equal(sa.players,1);
+ await emit(a,'leave');
+ const raceRoom=await emit(a,'create',{mode:'race'});await emit(rejoined,'join',{code:raceRoom.code});
+ await emit(a,'ready');await emit(rejoined,'ready');
+ for(let i=0;i<100&&sa.state?.phase!=='playing';i++)await wait(50);
+ assert.equal(sa.mode,'race');assert.equal(sa.state.phase,'playing');
+ const initialZ=sa.state.players[0].z;
+ await emit(a,'input',{epoch:1,seq:1,input:{up:true},pulses:[]});await wait(150);
+ assert.ok(sa.state.players[0].z>initialZ);assert.equal(sa.inputAck[0].seq,1);
  assert.equal((await fetch(url+'/socket.io/socket.io.js')).status,200);
  assert.equal((await fetch(url+'/api/room',{method:'POST'})).status,404);
  }finally{clients.forEach(c=>c.disconnect());await new Promise(r=>io.close(r));}

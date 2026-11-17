@@ -4,7 +4,7 @@ const F=require('../fight.js'),{Buffer}=require('../net-view.js');
 test('online script order resolves all runtime modules before entrypoint',()=>{
  const html=fs.readFileSync(require.resolve('../online.html'),'utf8');
  const scripts=[...html.matchAll(/<script src="([^"]+)"/g)].map(m=>m[1].split('?')[0]);
- assert.deepEqual(scripts.slice(-6),['fight.js','race.js','render.js','/socket.io/socket.io.js','net-view.js','online.js']);
+ assert.deepEqual(scripts.slice(-8),['fighter-engine.js','fight.js','party-controller.js','race.js','render.js','/socket.io/socket.io.js','net-view.js','online.js']);
  for(const name of scripts.filter(p=>!p.startsWith('/')))assert.ok(fs.existsSync(require.resolve('../'+name)));
 });
 test('network-shaped snapshot retains hit flash, recoil and effect through actual renderer',()=>{

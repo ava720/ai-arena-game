@@ -17,7 +17,7 @@ test('out-of-range strike cannot damage', () => {
 });
 test('startup exists and active frames hit only once', () => {
   const s = ready(); close(s); Fight.step(s, [{ light: true }, {}]);
-  assert.equal(s.fighters[1].hp, 1000); ticks(s, 4); assert.equal(s.fighters[1].hp, 1000);
+  assert.equal(s.fighters[1].hp, 1000); ticks(s, Fight.frameData.gpt.light.startup-1); assert.equal(s.fighters[1].hp, 1000);
   ticks(s, 1); assert.equal(s.fighters[1].hp, 945); ticks(s, 8); assert.equal(s.fighters[1].hp, 945);
 });
 test('holding attack does not auto-repeat', () => {
