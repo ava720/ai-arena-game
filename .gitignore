@@ -1,0 +1,15 @@
+# Only deployable game directories and npm entry belong in this repository.
+/*
+!/.gitignore
+!/package.json
+!/package-lock.json
+!/ai-arena/
+!/web-prototype/
+
+# Generated runtime files and local dependencies.
+**/*.log
+**/node_modules/
+**/.DS_Store
+**/Thumbs.db
+**/.env
+**/.env.*

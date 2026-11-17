@@ -1,0 +1,26 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const F=require('../fight.js'),{Buffer}=require('../net-view.js');
+test('online script order resolves all runtime modules before entrypoint',()=>{
+ const html=fs.readFileSync(require.resolve('../online.html'),'utf8');
+ const scripts=[...html.matchAll(/<script src="([^"]+)"/g)].map(m=>m[1].split('?')[0]);
+ assert.deepEqual(scripts.slice(-6),['fight.js','race.js','render.js','/socket.io/socket.io.js','net-view.js','online.js']);
+ for(const name of scripts.filter(p=>!p.startsWith('/')))assert.ok(fs.existsSync(require.resolve('../'+name)));
+});
+test('network-shaped snapshot retains hit flash, recoil and effect through actual renderer',()=>{
+ let s=F.create();for(let i=0;i<180;i++)F.step(s);s.fighters[0].x=550;s.fighters[1].x=635;
+ F.step(s,[{heavy:true},{}]);for(let i=0;i<30&&!s.lastHits.length;i++)F.step(s);
+ assert.ok(s.lastHits.length);const packet=JSON.parse(JSON.stringify({epoch:1,state:s})),b=new Buffer(0);b.push(packet,100);
+ const visual=b.sample(100);assert.ok(visual.fighters[1].hitFlash>0);assert.ok(visual.fighters[1].knockback>0);
+ const calls=[];let stack=0;
+ const ctx=new Proxy({}, {get(t,k){if(k in t)return t[k];if(k==='createLinearGradient'||k==='createRadialGradient')return ()=>({addColorStop(){}});if(k==='save')return ()=>{stack++};if(k==='restore')return ()=>{stack--};return (...args)=>calls.push({op:k,args});},set(t,k,v){t[k]=v;return true;}});
+ const scope={window:{AIFight:F},document:{createElement:()=>({getContext:()=>ctx})},console};
+ vm.runInNewContext(fs.readFileSync(require.resolve('../render.js'),'utf8'),scope);
+ scope.window.ArenaRender.fight(ctx,visual,false);
+ const impact=s.effects.find(e=>e.type==='hit');
+ assert.ok(calls.some(c=>c.op==='translate'&&Math.abs(c.args[0])<=5&&c.args[0]!==0),'screen shake');
+ assert.ok(calls.some(c=>c.op==='roundRect'&&c.args[2]===50&&c.args[3]===140),'hit flash overlay');
+ assert.ok(calls.some(c=>c.op==='fillText'&&c.args[0]==='−'+impact.damage),'floating damage');
+ assert.equal(stack,0,'canvas transform restored');
+ const before=s.fighters[1].x;for(let i=0;i<6;i++)F.step(s,[{},{left:true}]);assert.ok(s.fighters[1].x>before,'authoritative knockback');
+});

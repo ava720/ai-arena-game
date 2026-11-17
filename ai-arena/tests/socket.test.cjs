@@ -26,4 +26,3 @@ test('WebSocket rooms, real-time inputs, pulses, pause/rejoin and leave',async()
  assert.equal((await fetch(url+'/api/room',{method:'POST'})).status,404);
  }finally{clients.forEach(c=>c.disconnect());await new Promise(r=>io.close(r));}
 });
-

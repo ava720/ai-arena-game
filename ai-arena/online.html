@@ -139,7 +139,7 @@
       align-items: center;
       gap: 10px;
       background: rgba(13, 20, 38, 0.78);
-      backdrop-filter: blur(6px);
+
       padding: 5px 14px;
       border-radius: 20px;
       border: 1px solid rgba(122, 240, 196, 0.35);
@@ -274,6 +274,11 @@
     </div>
     <canvas id="screen" width="1280" height="720"></canvas>
     <div id="pad"></div>
+    <section id="match-result" hidden style="position:absolute;z-index:20;left:50%;top:50%;transform:translate(-50%,-50%);width:min(85vw,520px);padding:24px;border:1px solid #a3f5bd;border-radius:20px;background:#0c1a2bee;text-align:center;">
+      <h2 id="result-title"></h2><p id="result-detail" style="line-height:1.7;color:#bcd0e5"></p>
+      <button class="btn btn-primary" id="result-ready">再来一局</button>
+      <button class="btn btn-secondary" id="result-exit">退出房间</button>
+    </section>
   </div>
 
   <div id="rotate-tip">
@@ -282,10 +287,11 @@
     <p style="margin:0;color:#9eb2c9;font-size:14px;">关闭手机“竖屏锁定”后横置屏幕，即可解锁双拇指掌机手柄</p>
   </div>
 
-  <script src="fight.js"></script>
-  <script src="race.js"></script>
-  <script src="render.js"></script>
+  <script src="fight.js?v=combat-0.3.1"></script>
+  <script src="race.js?v=combat-0.3.1"></script>
+  <script src="render.js?v=combat-0.3.1"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="online.js"></script>
+  <script src="net-view.js?v=combat-0.3.1"></script>
+  <script src="online.js?v=combat-0.3.1"></script>
 </body>
 </html>

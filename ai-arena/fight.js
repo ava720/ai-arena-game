@@ -9,7 +9,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.3.0';
   const WIDTH = 1280, HEIGHT = 600, FLOOR = 480, FPS = 60;
   const MAX_HP = 1000, ROUND_FRAMES = 60 * FPS;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -29,8 +29,8 @@
   ];
 
   const baseMoves = {
-    light: { startup: 6, active: 3, recovery: 14, damage: 55, reach: 92, height: 48, y: -104, stun: 16, push: 25, guard: 10, energy: 9, cost: 0 },
-    heavy: { startup: 16, active: 5, recovery: 27, damage: 125, reach: 137, height: 63, y: -112, stun: 25, push: 58, guard: 24, energy: 14, cost: 0 },
+    light: { startup: 5, active: 4, recovery: 10, damage: 55, reach: 108, height: 48, y: -104, stun: 16, push: 25, guard: 10, energy: 9, cost: 0 },
+    heavy: { startup: 12, active: 5, recovery: 20, damage: 125, reach: 150, height: 63, y: -112, stun: 25, push: 58, guard: 24, energy: 14, cost: 0 },
     sweep: { startup: 12, active: 5, recovery: 25, damage: 90, reach: 123, height: 31, y: -33, stun: 24, push: 50, guard: 21, energy: 11, cost: 0, knockdown: true },
     airLight: { startup: 7, active: 7, recovery: 17, damage: 60, reach: 93, height: 72, y: -85, stun: 19, push: 26, guard: 12, energy: 9, cost: 0 },
     airHeavy: { startup: 12, active: 9, recovery: 22, damage: 100, reach: 113, height: 84, y: -74, stun: 23, push: 35, guard: 22, energy: 12, cost: 0 },
@@ -41,7 +41,7 @@
 
   function moveData(id, name) {
     const move = Object.assign({}, baseMoves[name]);
-    if (id === 'gpt' && name === 'light') { move.startup = 5; move.recovery = 12; }
+    if (id === 'gpt' && name === 'light') { move.startup = 5; move.recovery = 9; }
     if (id === 'deepseek' && name === 'special') Object.assign(move, { startup: 22, active: 1, recovery: 29, projectile: true, damage: 115, speed: 8, radius: 23 });
     if (id === 'deepseek' && name === 'super') Object.assign(move, { startup: 25, active: 1, recovery: 42, projectile: true, damage: 260, speed: 11, radius: 46 });
     if (id === 'claude' && name === 'special') Object.assign(move, { startup: 4, active: 24, recovery: 29, counter: true, damage: 150 });
@@ -58,7 +58,7 @@
     return { id, index, x: index ? 900 : 380, y: FLOOR, vx: 0, vy: 0, facing: index ? -1 : 1,
       hp: MAX_HP, maxHp: MAX_HP, energy: 30, guardMeter: 100,
       action: 'idle', actionFrame: 0, stun: 0, combo: 0, receivedCombo: 0, comboDamage: 0,
-      guard: false, crouch: false, jumped: 0, invulnerable: 0, knockdown: 0,
+      guard: false, crouch: false, blockstun: 0, knockback: 0, hitFlash: 0, jumped: 0, invulnerable: 0, knockdown: 0,
       buffer: null, hitVictims: [], attackSerial: 0, attackConnected: false,
       spawned: false, previousInput: {}, guardCooldown: 0 };
   }
@@ -67,8 +67,8 @@
     while (ids.length < 2) ids.push('deepseek');
     return { version: VERSION, phase: 'countdown', frame: 0, phaseFrames: 180, timer: 60, timeFrames: ROUND_FRAMES,
       round: 1, wins: [0, 0], winner: null, roundWinner: null, fighters: [fighter(ids[0], 0), fighter(ids[1], 1)],
-      projectiles: [], effects: [], hitboxes: [], hurtboxes: [], announcement: '准备', freeze: 0,
-      nextProjectileId: 1, lastHits: [], stats: [{ damage: 0, blocks: 0, maxCombo: 0 }, { damage: 0, blocks: 0, maxCombo: 0 }] };
+      projectiles: [], effects: [], hitboxes: [], hurtboxes: [], announcement: '准备', announcementFrames:45, freeze: 0,
+      nextEffectId:1, nextProjectileId: 1, lastHits: [], stats: [{ damage: 0, blocks: 0, maxCombo: 0, knockdowns: 0 }, { damage: 0, blocks: 0, maxCombo: 0, knockdowns: 0 }] };
   }
 
   function normalizedInput(input) {
@@ -86,12 +86,14 @@
     const m = frameData[f.id][f.action];
     return !!m && f.actionFrame >= m.startup && f.actionFrame < m.startup + m.active;
   }
-  function actionable(f) { return !f.stun && !f.knockdown && f.action === 'idle'; }
+  function actionable(f) { return !f.stun && !f.knockdown && !f.blockstun && f.action === 'idle'; }
   function changeAction(f, name) {
+    f.lightChain=name==='light'&&f.action==='light'?(f.lightChain||0)+1:0;
     f.action = name; f.actionFrame = 0; f.hitVictims = []; f.attackSerial++; f.attackConnected = false; f.spawned = false; f.guard = false;
   }
   function canCancel(f, name) {
-    if (!f.attackConnected || f.stun || f.knockdown) return false;
+    if (!f.attackConnected || f.stun || f.knockdown || f.blockstun) return false;
+    if(f.action==='light'&&name==='light'&&(f.lightChain||0)<2)return true;
     if ((f.action === 'light' || f.action === 'airLight') && ['heavy', 'special', 'super'].includes(name)) return true;
     return ['heavy', 'airHeavy', 'special'].includes(f.action) && name === 'super';
   }
@@ -116,16 +118,18 @@
     // A short input buffer accepts commands entered during the final recovery frames.
     const priority = ['super', 'special', 'heavy', 'light', 'jump', 'dash'];
     const pressed = priority.find(n => edges.includes(n));
-    if (pressed) f.buffer = { name: pressed, frames: 7 };
+    if (pressed) f.buffer = { name: pressed, frames: 10 };
     if (f.buffer) {
       if (perform(f, f.buffer.name)) f.buffer = null;
       else if (--f.buffer.frames <= 0) f.buffer = null;
     }
     f.previousInput = input;
   }
-  function particle(state, type, x, y, color, life = 15) { state.effects.push({ type, x, y, color, life, maxLife: life }); }
+  function particle(state, type, x, y, color, life = 15) { state.announcementFrames=50; if(state.effects.length>=40)state.effects.shift();state.effects.push({ id:state.nextEffectId++,type, x, y, color, life, maxLife: life }); }
 
   function stepFighter(state, f, opponent, input) {
+    if(f.hitFlash>0)f.hitFlash--;
+    if(f.blockstun>0)f.blockstun--;
     if (f.invulnerable > 0) f.invulnerable--;
     if (f.guardCooldown > 0) f.guardCooldown--;
     if (f.knockdown > 0) {
@@ -143,18 +147,18 @@
       f.crouch = input.down && f.y === FLOOR;
       f.guard = !f.guardCooldown && f.y === FLOOR && (input.guard || back);
       const dir = Number(input.right) - Number(input.left);
-      f.vx = f.crouch ? 0 : dir * (f.guard ? 2.1 : 4.4);
+      f.vx = f.crouch||f.blockstun ? 0 : dir * (f.guard ? 2.8 : 5.8);
     } else { f.guard = false; f.crouch = false; f.vx *= 0.81; }
     processInput(f, input);
 
     const m = frameData[f.id][f.action];
     if (m) {
-      if (f.action === 'dash' && f.actionFrame < 10) f.vx = f.facing * 11;
+      if (f.action === 'dash' && f.actionFrame < 10) f.vx = f.facing * 13;
       if (f.id === 'gpt' && f.action === 'special' && f.actionFrame < m.startup + m.active) f.vx = f.facing * 7;
       if (f.id === 'gemini' && f.action === 'special' && f.actionFrame < m.startup + m.active) { f.vx = f.facing * 6; if (f.actionFrame === 0 && f.y === FLOOR) f.vy = -8; }
       if (f.action === 'super' && f.actionFrame === 0) {
         state.announcement = characters.find(c => c.id === f.id).superName;
-        particle(state, 'super', f.x, f.y - 80, characters[f.index]?.color, 40);
+        particle(state, 'super', f.x, f.y - 80, characters.find(c=>c.id===f.id)?.color, 40);
       }
       if (m.projectile && active(f) && !f.spawned) {
         state.projectiles.push({ id: state.nextProjectileId++, x: f.x + f.facing * 65, y: f.y - 72,
@@ -162,7 +166,9 @@
         f.spawned = true;
       }
     }
-    f.x = clamp(f.x + f.vx, 55, WIDTH - 55);
+    f.x = clamp(f.x + f.vx + f.knockback, 55, WIDTH - 55);
+    f.knockback *= f.y<FLOOR?0.94:0.87;
+    if(Math.abs(f.knockback)<0.08)f.knockback=0;
     f.vy += 0.65;
     f.y = Math.min(FLOOR, f.y + f.vy);
     if (f.y === FLOOR) { f.vy = 0; f.jumped = 0; }
@@ -178,7 +184,7 @@
     if (counter) {
       const amount = 150;
       attacker.hp = Math.max(0, attacker.hp - amount); attacker.stun = 30; attacker.action = 'hit';
-      attacker.vx = sourceX < defender.x ? -8 : 8;
+      attacker.vx=0;attacker.knockback=sourceX<defender.x?-9:9;attacker.hitFlash=9;
       defender.action = 'idle'; defender.invulnerable = 18; defender.energy = Math.min(100, defender.energy + 15);
       state.stats[target].damage += amount; state.freeze = 8;
       state.announcement = '反制成功'; particle(state, 'counter', defender.x, defender.y - 70, '#f4ac83', 24);
@@ -193,7 +199,7 @@
       // Chip cannot kill. A guard break has no hidden extra damage.
       damage = Math.min(defender.hp - 1, Math.ceil(move.damage * 0.05));
       defender.hp -= damage;
-      defender.vx = sourceX < defender.x ? 2.4 : -2.4;
+      defender.knockback=sourceX<defender.x?3.6:-3.6;defender.blockstun=Math.min(14,move.stun);defender.vx=0;
       defender.guardCooldown = 0;
       if (!defender.guardMeter) {
         defender.guard = false; defender.stun = 48; defender.action = 'hit'; defender.guardCooldown = 90;
@@ -206,18 +212,22 @@
       damage = Math.round(move.damage * scaled);
       defender.hp = Math.max(0, defender.hp - damage);
       defender.receivedCombo++; attacker.combo = defender.receivedCombo;
-      attacker.comboDamage += damage;
+      attacker.comboDamage = defender.receivedCombo===1?damage:attacker.comboDamage+damage;
       state.stats[owner].maxCombo = Math.max(state.stats[owner].maxCombo, attacker.combo);
+      defender.hitFlash=9;defender.blockstun=0;
       defender.stun = move.stun; defender.action = 'hit'; defender.actionFrame = 0;
-      defender.vx = (sourceX < defender.x ? 1 : -1) * (move.push / 5);
+      defender.vx=0;defender.knockback=(sourceX<defender.x?1:-1)*(move.push/4.5);
       defender.energy = Math.min(100, defender.energy + 6);
       if (move.knockdown || defender.receivedCombo >= 4) {
-        defender.knockdown = 42; defender.stun = 0; defender.action = 'knockdown';
+        defender.vy=-5.5;
+        defender.knockdown = 36; defender.stun = 0; defender.action = 'knockdown';
         defender.receivedCombo = 0; defender.guard = false;
       }
-      state.freeze = Math.max(state.freeze, move.damage > 150 ? 10 : move.damage > 70 ? 6 : 4);
+      state.freeze = Math.max(state.freeze, move.damage > 150 ? 7 : move.damage > 70 ? 4 : 2);
       state.announcement = attacker.combo > 1 ? `${attacker.combo} HIT COMBO` : '命中';
-      particle(state, 'hit', defender.x, defender.y - 74, characters.find(c => c.id === attacker.id).color, 20);
+      particle(state, 'hit', defender.x, defender.y - 74, characters.find(c => c.id === attacker.id).color, 16);
+      state.effects[state.effects.length-1].damage=damage;
+      if(move.knockdown||defender.knockdown){state.stats[owner].knockdowns++;}
     }
     attacker.energy = Math.min(100, attacker.energy + (blocking ? 3 : move.energy));
     state.stats[owner].damage += damage;
@@ -251,16 +261,17 @@
     }
     if (state.phase === 'countdown') {
       state.announcement = state.phaseFrames > 60 ? String(Math.ceil(state.phaseFrames / 60)) : 'FIGHT';
-      if (--state.phaseFrames <= 0) { state.phase = 'playing'; state.announcement = 'FIGHT'; }
+      if (--state.phaseFrames <= 0) { state.phase = 'playing'; state.announcement = 'FIGHT';state.announcementFrames=45; }
       // Holding an attack through a countdown does not silently trigger a strike.
       state.fighters.forEach((f, i) => { f.previousInput = input[i]; });
       return state;
     }
+    if(state.announcementFrames>0&&--state.announcementFrames===0)state.announcement='';
     if (state.freeze > 0) {
       state.freeze--;
       state.fighters.forEach((f, i) => {
         const pressed = ['super', 'special', 'heavy', 'light', 'jump', 'dash'].find(k => input[i][k] && !f.previousInput[k]);
-        if (pressed) f.buffer = { name: pressed, frames: 7 };
+        if (pressed) f.buffer = { name: pressed, frames: 10 };
         f.previousInput = input[i];
       });
       return state;
@@ -272,9 +283,11 @@
     stepFighter(state, b, a, input[1]);
     // Pushboxes prevent ground crossing, but jumping can switch sides.
     if (Math.abs(a.y - b.y) < 80 && Math.abs(a.x - b.x) < 57) {
-      const sign = a.x <= b.x ? -1 : 1, correction = (57 - Math.abs(a.x - b.x)) / 2;
-      a.x = clamp(a.x + sign * correction, 55, WIDTH - 55);
-      b.x = clamp(b.x - sign * correction, 55, WIDTH - 55);
+      const left=a.x<=b.x?a:b,right=left===a?b:a;
+      const middle=(left.x+right.x)/2;
+      left.x=clamp(middle-28.5,55,WIDTH-112);
+      right.x=left.x+57;
+      if(right.x>WIDTH-55){right.x=WIDTH-55;left.x=right.x-57;}
     }
     state.hurtboxes = state.fighters.map(hurtbox); state.hitboxes = [];
     const events = [];

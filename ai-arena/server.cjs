@@ -110,7 +110,7 @@ io.on('connection', socket => {
     if (room.state && room.state.phase!=='ended') throw Error('对局尚未结束');
     player.ready = true;
     if (room.players.every(p => p?.socketId && p.ready)) {
-      room.epoch++;
+      room.epoch++;room.endedSent=false;
       room.state = (room.mode==='fight'?F:R).create({characters:room.players.map(p=>p.id)});
       room.players.forEach((p,i)=>{p.ready=false;clearInput(room,i);});
     }
@@ -131,11 +131,17 @@ io.on('connection', socket => {
     try {const {room,slot,player}=playerFor(socket);player.socketId=null;player.ready=false;player.disconnectedAt=Date.now();clearInput(room,slot);publish(room,true);} catch {}
   });
 });
+let previousTick=performance.now(),accumulator=0;
+const STEP_MS=1000/60;
 const tick = setInterval(() => {
+  const clock=performance.now();
+  accumulator=Math.min(100,accumulator+clock-previousTick);previousTick=clock;
+  const steps=Math.floor(accumulator/STEP_MS);accumulator-=steps*STEP_MS;
   const now=Date.now();
   for(const [code,r] of rooms) {
     if(now-r.last>1800000){io.to(code).emit('room:expired');io.in(code).socketsLeave(code);rooms.delete(code);continue;}
     if(r.state && r.state.phase!=='ended' && r.players.every(p=>p?.socketId)) {
+      for(let step=0;step<steps&&r.state.phase!=='ended';step++){
       const merged=r.inputs.map((held,slot)=>{
         const result={...held};
         for(const k of actionKeys){
@@ -145,9 +151,10 @@ const tick = setInterval(() => {
         return result;
       });
       (r.mode==='fight'?F:R).step(r.state,merged);
+      }
     }
     // Obsolete snapshots may be dropped under backpressure instead of building a queue.
-    publish(r,r.state?.phase==='ended' && !r.endedSent);
+    if(r.state&&r.state.phase!=='ended'&&r.players.every(p=>p?.socketId)&&steps>0||r.state?.phase==='ended'&&!r.endedSent)publish(r,r.state?.phase==='ended' && !r.endedSent);
     r.endedSent=r.state?.phase==='ended';
   }
 },1000/60);
@@ -155,4 +162,3 @@ server.on('close',()=>clearInterval(tick));
 if(require.main===module) server.listen(process.env.PORT||4173,'0.0.0.0',()=>console.log('WebSocket 游戏服务已启动，端口 '+(process.env.PORT||4173)));
 module.exports=server;
 module.exports.io=io;
-
