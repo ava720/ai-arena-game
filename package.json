@@ -1,0 +1,11 @@
+{
+  "name": "ai-two-player-arena",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node ai-arena/server.cjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
