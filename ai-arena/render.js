@@ -105,3 +105,9 @@ R.box(c,20,20,600,77,12,'#102039dd');let color=R.colors[me.id]?.[0]||'#fff';R.tx
 R.box(c,638,0,4,720,0,'#090e1e');if(s.phase==='countdown'){R.box(c,480,245,320,125,18,'#101c32ee');R.txt(c,'准备出发',640,285,22,'#bcd2ec','center');R.txt(c,`${Math.ceil(s.countdown/60)}`,640,345,49,'#acf3c7','center')}
 };
 })();
+
+window.ArenaRender.forMode=function(mode,context,state,debug=false,now=performance.now()){
+ if(mode==='fight')return this.fight(context,state,debug,now);
+ if(mode==='race')return this.race(context,state,debug,now);
+ throw new Error('Unknown game mode: '+mode);
+};

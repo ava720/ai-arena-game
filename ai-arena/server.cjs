@@ -8,6 +8,7 @@ const F = require('./fighter-engine.js');
 const R = require('./party-controller.js');
 const root = path.resolve(__dirname, '..');
 const rooms = new Map();
+const engines=Object.freeze({fight:F,race:R});
 const keys = ['left','right','up','down','jump','light','heavy','special','super','dash','guard','grab','run','tech','dive'];
 const actionKeys = keys.filter(k => !['left','right','up','down','guard','run'].includes(k));
 const ids = new Set(F.characters.map(c => c.id));
@@ -91,6 +92,7 @@ io.on('connection', socket => {
     return attach(room,slot);
   });
   handle('create', b => {
+    if(b.mode!==undefined&&!Object.hasOwn(engines,b.mode))throw Error('不支持的游戏模式');
     if (socket.data.code) throw Error('请先退出当前房间');
     let code; do {code = String(crypto.randomInt(100000,1000000));} while (rooms.has(code));
     const room = {code,mode:b.mode==='race'?'race':'fight',players:[null,null],inputs:[{},{}],pulses:[{},{}],releases:[{},{}],state:null,epoch:0,last:Date.now()};
@@ -113,7 +115,7 @@ io.on('connection', socket => {
     player.ready = true;
     if (room.players.every(p => p?.socketId && p.ready)) {
       room.epoch++;room.endedSent=false;
-      room.state = (room.mode==='fight'?F:R).create({characters:room.players.map(p=>p.id)});
+      room.state = engines[room.mode].create({characters:room.players.map(p=>p.id)});
       room.players.forEach((p,i)=>{p.ready=false;clearInput(room,i);});
     }
     room.last=Date.now(); publish(room,true); return {};
@@ -152,7 +154,7 @@ const tick = setInterval(() => {
         return result;
       });
       r.players.forEach((p,i)=>{p.appliedInput=merged[i];if(!Object.values(r.pulses[i]).some(n=>n>0))p.appliedSeq=p.seq;});
-      (r.mode==='fight'?F:R).step(r.state,merged);
+      engines[r.mode].step(r.state,merged);
       }
     }
     // Obsolete snapshots may be dropped under backpressure instead of building a queue.

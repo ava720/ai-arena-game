@@ -19,6 +19,26 @@ let session = null;
 let input = {};
 const pulseBuffer = new Set();
 const activePointers = new Map();
+const activeKeys=new Map();
+const keyboardBindings={
+ fight:{ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowDown:'down',KeyS:'down',ArrowUp:'jump',KeyW:'jump',Space:'jump',ShiftLeft:'run',ShiftRight:'run',KeyJ:'light',KeyK:'heavy',KeyL:'special',KeyU:'super',KeyI:'guard',KeyO:'dash'},
+ race:{ArrowLeft:'left',KeyA:'left',ArrowRight:'right',KeyD:'right',ArrowUp:'up',KeyW:'up',ArrowDown:'down',KeyS:'down',Space:'jump',ShiftLeft:'dash',ShiftRight:'dash',KeyJ:'dive',KeyK:'grab'}
+};
+const engines={fight:window.FighterEngine,race:window.PartyController};
+const modeName=mode=>mode==='fight'?'格斗模式':'派对模式';
+function selectMode(mode){
+ if(session||joining)return;
+ $('mode').value=mode==='race'?'race':'fight';
+ for(const name of ['fight','race']){const selected=name===$('mode').value,button=$('mode-'+name);button.setAttribute('aria-pressed',String(selected));button.className='btn '+(selected?'btn-primary':'btn-secondary');}
+}
+$('mode-fight').onclick=()=>selectMode('fight');$('mode-race').onclick=()=>selectMode('race');
+function updateAction(action){
+ const held=Array.from(activePointers.values()).some(r=>r.action===action)||Array.from(activeKeys.values()).includes(action);
+ if(!!input[action]===held)return;
+ input[action]=held;if(held)pulseBuffer.add(action);
+ $('pad').querySelectorAll('.pad-btn').forEach(btn=>{if(btn.dataset.action===action)btn.classList.toggle('active',held);});
+ sendInput();
+}
 let seq = 0;
 let joining = false;
 const screenCanvas=$('screen');
@@ -38,7 +58,7 @@ function renderFrame(now){
  const visual=interpolated&&predictor?predictor.apply(interpolated,now):interpolated;
  if(visual){
   const start=performance.now();
-  (session.mode==='fight'?ArenaRender.fight:ArenaRender.race)(screenContext,visual,false,now);
+  ArenaRender.forMode(session.mode,screenContext,visual,false,now);
   renderCost+=performance.now()-start;frameCount++;
   if(!statsStart)statsStart=now;
   if(now-statsStart>=1000){performanceStats.fps=Math.round(frameCount*1000/(now-statsStart));performanceStats.renderMs=+(renderCost/frameCount).toFixed(2);screenCanvas.dataset.fps=performanceStats.fps;screenCanvas.dataset.renderMs=performanceStats.renderMs;frameCount=0;renderCost=0;statsStart=now;}
@@ -51,7 +71,7 @@ function startRendering(){if(!renderId&&!document.hidden)renderId=requestAnimati
 
 const socket = io({transports:['websocket'], autoConnect:true, reconnection:true});
 const query = new URLSearchParams(location.search);
-if (query.get('mode') === 'race') $('mode').value = 'race';
+selectMode(query.get('mode'));
 if (query.get('room')) $('code').value = query.get('room');
 
 function request(event, payload = {}) {
@@ -75,11 +95,13 @@ function clearControls(notify = true) {
   input = {};
   pulseBuffer.clear();
   activePointers.forEach(r=>r.btn.classList.remove('active'));
-  activePointers.clear();
+  activePointers.clear();activeKeys.clear();
+  $('pad').querySelectorAll('.pad-btn').forEach(btn=>btn.classList.remove('active'));
   if(notify && session && socket.connected){sendInput();socket.emit('release',{});}
 }
 function buildGamepad(mode) {
   const pad = $('pad');
+  setText('input-help',mode==='fight'?'键盘：A/D 移动 · W/空格 跳/受身 · S 蹲 · Shift 跑 · J 轻击 · K 重击 · L 技能 · U 必杀 · I 防御 · O 突进':'键盘：WASD / 方向键移动 · 空格跳 · Shift 滚动 · J 飞扑 · K 推搡');
   if (mode === 'fight') {
     pad.innerHTML = `
       <div class="pad-left">
@@ -118,12 +140,11 @@ function buildGamepad(mode) {
 
     btn.addEventListener('pointerdown', e => {
       e.preventDefault();
+      btn.blur();
       btn.setPointerCapture(e.pointerId);
       activePointers.set(e.pointerId, { btn, action });
       btn.classList.add('active');
-      input[action] = true;
-      pulseBuffer.add(action);
-      sendInput();
+      updateAction(action);
     });
 
     const release = e => {
@@ -131,9 +152,7 @@ function buildGamepad(mode) {
       if (record) {
 
         activePointers.delete(e.pointerId);
-        const stillHeld = Array.from(activePointers.values()).some(r => r.action === record.action);
-        if (!stillHeld) { input[record.action] = false; record.btn.classList.remove('active'); }
-        sendInput();
+        updateAction(record.action);
       }
     };
 
@@ -150,6 +169,7 @@ function showLobby(message) {
   $('status').textContent=message;
 }
 function leaveView(message='已退出房间') {
+  exitPresentation();
   clearControls();
   stopRendering();
   session=null;
@@ -160,20 +180,58 @@ function leaveView(message='已退出房间') {
   $('ready').textContent='我已准备好（开始对局）';
   showLobby(message);
 }
+// Fullscreen must be requested synchronously inside the user's click handler.
+let presentationActive=false,presentationGeneration=0,ownsFullscreen=false;
+function syncViewport(){
+ const viewport=window.visualViewport;
+ const width=viewport?.width||window.innerWidth,height=viewport?.height||window.innerHeight;
+ if(width>0&&height>0){document.documentElement.style.setProperty('--viewport-width',width+'px');document.documentElement.style.setProperty('--viewport-height',height+'px');}
+}
+function exitPresentation(){
+ presentationActive=false;presentationGeneration++;
+ try{window.screen?.orientation?.unlock?.();}catch{}
+ if(ownsFullscreen&&(document.fullscreenElement||document.webkitFullscreenElement)){
+  try{const exit=document.exitFullscreen||document.webkitExitFullscreen;Promise.resolve(exit?.call(document)).catch(()=>{});}catch{}
+ }
+ ownsFullscreen=false;syncViewport();
+}
+function enterPresentation(){
+ presentationActive=true;const generation=++presentationGeneration;
+ syncViewport();const root=document.documentElement;
+ const request=root.requestFullscreen||root.webkitRequestFullscreen;
+ if(!request)return; // CSS portrait rotation is always available, even without fullscreen.
+ let pending;
+ try{pending=document.fullscreenElement||document.webkitFullscreenElement?Promise.resolve():request.call(root);}catch{return;}
+ Promise.resolve(pending).then(async()=>{
+  ownsFullscreen=(document.fullscreenElement||document.webkitFullscreenElement)===root;
+  if(!presentationActive){exitPresentation();return;}
+  if(generation!==presentationGeneration)return;
+  try{await window.screen?.orientation?.lock?.('landscape');}catch{/* Safari/policy rejection: CSS remains active. */}
+  if(!presentationActive){exitPresentation();return;}
+  syncViewport();
+ }).catch(()=>{syncViewport();});
+}
+window.addEventListener('resize',syncViewport);
+window.visualViewport?.addEventListener('resize',syncViewport);
+document.addEventListener('fullscreenchange',syncViewport);
+document.addEventListener('webkitfullscreenchange',syncViewport);
+syncViewport();
 async function connect(action) {
   if(joining || session) return;
   const code=$('code').value.trim();
   if(action==='join' && !/^\d{6}$/.test(code)) { $('status').textContent='请输入 6 位数字房间码'; return; }
+  enterPresentation();
   joining=true;
   try {
     session=await request(action,{code,mode:$('mode').value,character:$('character').value});
     seq=0;
+    $('mode').value=session.mode;
     clearControls();
     $('setup').hidden=true;
     $('room-actions').hidden=false;
     buildGamepad(session.mode);
-    $('status').textContent=`房间 ${session.code} · 你是 P${session.slot+1} · 请准备`;
-  } catch(e) { $('status').textContent=e.message; }
+    $('status').textContent=`房间 ${session.code} · ${modeName(session.mode)} · 你是 P${session.slot+1} · 请准备`;
+  } catch(e) { exitPresentation();$('status').textContent=e.message; }
   finally { joining=false; }
 }
 $('create').onclick=()=>connect('create');
@@ -203,8 +261,9 @@ $('hud-exit').onclick=async()=>{
 socket.on('state',d=>{
   if(!session || d.code!==session.code) return;
   if(session.epoch!==d.epoch){session.epoch=d.epoch;clearControls();viewBuffer.reset();}
+  const wasPlaying=latestPacket?.state?.phase==='playing';
   latestPacket=d;receivedAt=performance.now();viewBuffer.push(d,receivedAt);
-  if(!predictor||predictor.slot!==session.slot||predictor.mode!==session.mode)predictor=new ArenaView.Predictor(session.mode==='fight'?AIFight:AIRace,session.slot,session.mode);
+  if(!predictor||predictor.slot!==session.slot||predictor.mode!==session.mode)predictor=new ArenaView.Predictor(engines[session.mode],session.slot,session.mode);
   predictor.setRTT(networkRTT);predictor.reconcile(d,receivedAt);
   const ready=!!d.ready[session.slot];
   $('ready').disabled=ready;
@@ -216,6 +275,7 @@ socket.on('state',d=>{
   }
   $('lobby-view').hidden=true;
   $('game-view').hidden=false;
+  if(d.state.phase==='playing'&&!wasPlaying)screenCanvas.focus({preventScroll:true});
   startRendering();
   let info=`房间 ${session.code} · 你是 P${session.slot+1}`;
   if(d.disconnected) info+=' · 对方断线，游戏已暂停';
@@ -270,3 +330,15 @@ function measureRTT(){
 }
 socket.on('connect',measureRTT);
 setInterval(measureRTT,2000);
+
+window.addEventListener('keydown',e=>{
+ if(!session||!latestPacket?.state||latestPacket.disconnected||latestPacket.state.phase!=='playing'||document.hidden)return;
+ if(e.ctrlKey||e.metaKey||e.altKey||e.target?.isContentEditable||/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(e.target?.tagName||''))return;
+ const action=keyboardBindings[session.mode]?.[e.code];if(!action)return;
+ e.preventDefault();if(e.repeat||activeKeys.has(e.code))return;
+ activeKeys.set(e.code,action);updateAction(action);
+});
+window.addEventListener('keyup',e=>{
+ const action=activeKeys.get(e.code);if(!action)return;
+ e.preventDefault();activeKeys.delete(e.code);updateAction(action);
+});
