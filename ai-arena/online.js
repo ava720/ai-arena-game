@@ -1,30 +1,37 @@
 const $ = id => document.getElementById(id);
-
 let session = null;
 let input = {};
-let pulseBuffer = new Set();
-let busy = false;
-let pollTimer = null;
+const pulseBuffer = new Set();
 const activePointers = new Map();
-
+let seq = 0;
+let joining = false;
+const socket = io({transports:['websocket'], autoConnect:true, reconnection:true});
 const query = new URLSearchParams(location.search);
 if (query.get('mode') === 'race') $('mode').value = 'race';
-if (query.get('room')) {
-  $('code').value = query.get('room');
-  $('status').textContent = `已自动填入房间码 ${query.get('room')}，请选择角色后点击“加入房间”`;
-}
+if (query.get('room')) $('code').value = query.get('room');
 
-async function api(action, extra = {}) {
-  const res = await fetch('/api/room', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...session, action, ...extra })
+function request(event, payload = {}) {
+  return new Promise((resolve,reject) => {
+    if (!socket.connected) return reject(Error('连接尚未建立，请稍后重试'));
+    socket.timeout(8000).emit(event,payload,(err,data) => {
+      if(err) return reject(Error('服务器响应超时，请重新连接后确认房间状态'));
+      if(!data?.ok) return reject(Error(data?.error || '操作失败'));
+      resolve(data);
+    });
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || '网络请求失败');
-  return data;
 }
-
+function sendInput() {
+  if(!session || !socket.connected) return;
+  socket.emit('input',{epoch:session.epoch,seq:++seq,input:{...input},pulses:Array.from(pulseBuffer)});
+  pulseBuffer.clear();
+}
+function clearControls(notify = true) {
+  input = {};
+  pulseBuffer.clear();
+  activePointers.forEach(r=>r.btn.classList.remove('active'));
+  activePointers.clear();
+  if(notify && session && socket.connected) socket.emit('release',{});
+}
 function buildGamepad(mode) {
   const pad = $('pad');
   if (mode === 'fight') {
@@ -70,15 +77,17 @@ function buildGamepad(mode) {
       btn.classList.add('active');
       input[action] = true;
       pulseBuffer.add(action);
+      sendInput();
     });
 
     const release = e => {
       const record = activePointers.get(e.pointerId);
       if (record) {
-        record.btn.classList.remove('active');
+        
         activePointers.delete(e.pointerId);
         const stillHeld = Array.from(activePointers.values()).some(r => r.action === record.action);
-        if (!stillHeld) input[record.action] = false;
+        if (!stillHeld) { input[record.action] = false; record.btn.classList.remove('active'); }
+        sendInput();
       }
     };
 
@@ -88,126 +97,100 @@ function buildGamepad(mode) {
   });
 }
 
+
+function showLobby(message) {
+  $('game-view').hidden=true;
+  $('lobby-view').hidden=false;
+  $('status').textContent=message;
+}
+function leaveView(message='已退出房间') {
+  clearControls();
+  session=null;
+  $('setup').hidden=false;
+  $('room-actions').hidden=true;
+  $('ready').disabled=false;
+  $('ready').textContent='我已准备好（开始对局）';
+  showLobby(message);
+}
 async function connect(action) {
+  if(joining || session) return;
+  const code=$('code').value.trim();
+  if(action==='join' && !/^\d{6}$/.test(code)) { $('status').textContent='请输入 6 位数字房间码'; return; }
+  joining=true;
   try {
-    const codeVal = $('code').value.trim();
-    if (action === 'join' && codeVal.length !== 6) {
-      $('status').textContent = '请输入正确的 6 位数字房间码';
-      return;
-    }
-
-    $('status').textContent = '正在连接服务器...';
-    session = await api(action, {
-      code: codeVal,
-      mode: $('mode').value,
-      character: $('character').value
-    });
-
-    $('setup').hidden = true;
-    $('room-actions').hidden = false;
-    $('status').textContent = `房间号：${session.code}（你是 P${session.slot + 1}）· 等待双方点击准备`;
-
+    session=await request(action,{code,mode:$('mode').value,character:$('character').value});
+    seq=0;
+    clearControls();
+    $('setup').hidden=true;
+    $('room-actions').hidden=false;
     buildGamepad(session.mode);
-    startPoll();
-  } catch (e) {
-    $('status').textContent = e.message;
-  }
+    $('status').textContent=`房间 ${session.code} · 你是 P${session.slot+1} · 请准备`;
+  } catch(e) { $('status').textContent=e.message; }
+  finally { joining=false; }
 }
-
-$('create').onclick = () => connect('create');
-$('join').onclick = () => connect('join');
-
-const sendReady = async () => {
-  try {
-    await api('ready');
-    $('ready').textContent = '已准备，等待对手确认...';
-    $('ready').disabled = true;
-    $('hud-ready').hidden = true;
-    $('status').textContent = `房间号：${session.code} · 你已准备，等待对手`;
-  } catch (e) {
-    $('status').textContent = e.message;
-  }
-};
-
-$('ready').onclick = sendReady;
-$('hud-ready').onclick = sendReady;
-
-$('share').onclick = async () => {
-  const link = `${location.origin}${location.pathname}?room=${session.code}&mode=${session.mode}`;
-  try {
-    await navigator.clipboard.writeText(link);
-    $('status').textContent = `已复制邀请链接（房间码 ${session.code}），快发给微信好友吧！`;
-  } catch {
-    $('status').textContent = `请手动复制链接发给好友：${link}`;
-  }
-};
-
-$('hud-exit').onclick = () => {
-  clearTimeout(pollTimer);
-  session = null;
-  input = {};
-  activePointers.clear();
-  $('game-view').hidden = true;
-  $('lobby-view').hidden = false;
-  $('setup').hidden = false;
-  $('room-actions').hidden = true;
-  $('ready').disabled = false;
-  $('ready').textContent = '我已准备好（开始对局）';
-  $('status').textContent = '已退出房间';
-};
-
-function startPoll() {
-  clearTimeout(pollTimer);
-  poll();
+$('create').onclick=()=>connect('create');
+$('join').onclick=()=>connect('join');
+async function sendReady() {
+  $('ready').disabled=true;
+  $('hud-ready').disabled=true;
+  try { await request('ready'); }
+  catch(e) { $('status').textContent=e.message; $('hud-text').textContent=e.message; $('ready').disabled=false; $('hud-ready').disabled=false; }
 }
-
-async function poll() {
-  if (!session) return;
-  if (busy) {
-    pollTimer = setTimeout(poll, 35);
+$('ready').onclick=sendReady;
+$('hud-ready').onclick=sendReady;
+$('share').onclick=async()=>{
+  if(!session) return;
+  const link=`${location.origin}${location.pathname}?room=${session.code}&mode=${session.mode}`;
+  try { await navigator.clipboard.writeText(link); $('status').textContent=`邀请链接已复制 · 房间 ${session.code}`; }
+  catch { $('status').textContent=`请复制邀请链接：${link}`; }
+};
+$('hud-exit').onclick=async()=>{
+  clearControls();
+  try { await request('leave'); } catch { socket.disconnect(); socket.connect(); }
+  leaveView();
+};
+socket.on('state',d=>{
+  if(!session || d.code!==session.code) return;
+  if(session.epoch!==d.epoch){session.epoch=d.epoch;clearControls();}
+  const ready=!!d.ready[session.slot];
+  $('ready').disabled=ready;
+  $('ready').textContent=ready?'已准备，等待对手':'我已准备好（开始对局）';
+  if(!d.state){
+    showLobby(`房间 ${session.code} · ${d.players}/2 人 · ${d.disconnected?'等待对方连接':ready?'已准备，等待对手':'请点击准备'}`);
     return;
   }
-  busy = true;
-  try {
-    const pulses = Array.from(pulseBuffer);
-    pulseBuffer.clear();
-
-    const d = await api('input', { input, pulses });
-
-    if (!d.state) {
-      $('lobby-view').hidden = false;
-      $('game-view').hidden = true;
-      $('status').textContent = `房间 ${session.code} · 当前人数 ${d.players}/2 · ${d.ready[session.slot] ? '你已准备' : '请点击准备'}`;
-    } else {
-      $('lobby-view').hidden = true;
-      $('game-view').hidden = false;
-
-      const canvas = $('screen');
-      const ctx = canvas.getContext('2d');
-      (session.mode === 'fight' ? ArenaRender.fight : ArenaRender.race)(ctx, d.state, false);
-
-      let info = `房间 ${session.code} · P${session.slot + 1}`;
-      if (d.disconnected) info += ' · 对方网络波动/暂离';
-      if (d.state.phase === 'ended') {
-        info += d.state.winner === null ? ' · 平局！' : ` · P${d.state.winner + 1} 获胜！`;
-        $('hud-ready').hidden = false;
-      } else {
-        $('hud-ready').hidden = true;
-      }
-      $('hud-text').textContent = info;
-    }
-  } catch (e) {
-    $('status').textContent = '网络重连中：' + e.message;
-    $('hud-text').textContent = '网络重连中...';
-  } finally {
-    busy = false;
-    if (session) pollTimer = setTimeout(poll, 35);
-  }
-}
-
-window.addEventListener('blur', () => {
-  input = {};
-  pulseBuffer.clear();
-  activePointers.forEach(r => r.btn.classList.remove('active'));
-  activePointers.clear();
+  $('lobby-view').hidden=true;
+  $('game-view').hidden=false;
+  const ctx=$('screen').getContext('2d');
+  (session.mode==='fight'?ArenaRender.fight:ArenaRender.race)(ctx,d.state,false);
+  let info=`房间 ${session.code} · 你是 P${session.slot+1}`;
+  if(d.disconnected) info+=' · 对方断线，游戏已暂停';
+  const ended=d.state.phase==='ended';
+  $('hud-ready').hidden=!ended;
+  $('hud-ready').disabled=ready;
+  $('hud-ready').textContent=ready?'等待对手':'再来一局';
+  if(ended) info+=d.state.winner===null?' · 平局':` · P${d.state.winner+1} 获胜`;
+  $('hud-text').textContent=info;
 });
+socket.on('connect',async()=>{
+  if(!session){$('status').textContent='服务器已连接，请创建或加入房间';return;}
+  // Reconnect authenticates the original slot; never silently creates another player.
+  try {
+    session=await request('resume',{code:session.code,token:session.token});
+    seq=0;clearControls();
+    $('hud-text').textContent='连接已恢复';
+  } catch(e){leaveView(e.message);}
+});
+socket.on('disconnect',()=>{
+  clearControls(false);
+  $('status').textContent='连接已中断，正在重连…';
+  $('hud-text').textContent='连接已中断，正在重连…';
+});
+socket.on('connect_error',()=>{
+  $('status').textContent='WebSocket 连接失败，请检查服务器或代理是否支持 WebSocket';
+  $('hud-text').textContent='连接失败，正在重试…';
+});
+socket.on('room:expired',()=>leaveView('房间已过期，请重新创建'));
+window.addEventListener('blur',()=>clearControls());
+window.addEventListener('pagehide',()=>clearControls());
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearControls();});

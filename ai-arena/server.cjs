@@ -1,188 +1,158 @@
+'use strict';
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { Server } = require('socket.io');
 const F = require('./fight.js');
 const R = require('./race.js');
-
 const root = path.resolve(__dirname, '..');
 const rooms = new Map();
-
-const MIME_TYPES = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon'
-};
-
-function send(res, data, status = 200) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  });
-  res.end(JSON.stringify(data));
-}
-
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'OPTIONS') {
-    return send(res, {}, 204);
+const keys = ['left','right','up','down','jump','light','heavy','special','super','dash','guard','grab'];
+const actionKeys = keys.filter(k => !['left','right','up','down','guard'].includes(k));
+const ids = new Set(F.characters.map(c => c.id));
+const MIME = {'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml','.ico':'image/x-icon'};
+const server = http.createServer((req, res) => {
+  let pathname;
+  try { pathname = decodeURIComponent(new URL(req.url, 'http://local').pathname); }
+  catch { res.writeHead(400); return res.end('Invalid URL'); }
+  if (pathname === '/') pathname = '/web-prototype/index.html';
+  // Serve only website assets, never Git metadata, research files or server source.
+  const allowed = /^\/(ai-arena|web-prototype)\/[^\0]*\.(html|js|css|png|jpg|svg|ico)$/.test(pathname);
+  const file = path.resolve(root, '.' + pathname);
+  if (!allowed || !file.startsWith(root + path.sep) || pathname.split('/').some(p => p.startsWith('.'))) {
+    res.writeHead(404); return res.end('Not found');
   }
-
-  let url;
-  try {
-    url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  } catch {
-    return send(res, { error: 'URL无效' }, 400);
-  }
-
-  if (url.pathname === '/api/room' && req.method === 'POST') {
-    let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 8192) return send(res, { error: '请求过大' }, 413);
-    }
-    try {
-      const b = JSON.parse(body);
-      let room = rooms.get(String(b.code || '').trim());
-
-      if (b.action === 'create') {
-        let code;
-        do {
-          code = crypto.randomInt(100000, 1000000).toString();
-        } while (rooms.has(code));
-        room = {
-          code,
-          mode: b.mode === 'race' ? 'race' : 'fight',
-          players: [],
-          inputs: [{}, {}],
-          pulseQueue: [{}, {}],
-          state: null,
-          last: Date.now()
-        };
-        rooms.set(code, room);
-      }
-
-      if (!room) return send(res, { error: '房间不存在或已过期' }, 404);
-
-      if (b.action === 'create' || b.action === 'join') {
-        if (room.players.length >= 2) return send(res, { error: '房间已满' }, 409);
-        const token = crypto.randomBytes(24).toString('hex');
-        room.players.push({
-          token,
-          id: b.character || 'gpt',
-          seen: Date.now(),
-          ready: false
-        });
-        room.last = Date.now();
-        return send(res, {
-          code: room.code,
-          token,
-          slot: room.players.length - 1,
-          mode: room.mode
-        });
-      }
-
-      const slot = room.players.findIndex(p => p.token === b.token);
-      if (slot < 0) return send(res, { error: '身份校验失效，请重新加入' }, 403);
-
-      room.players[slot].seen = Date.now();
-      room.last = Date.now();
-
-      if (b.action === 'ready') {
-        room.players[slot].ready = true;
-        if (room.players.length === 2 && room.players.every(p => p.ready)) {
-          room.state = (room.mode === 'fight' ? F : R).create({
-            characters: room.players.map(p => p.id)
-          });
-          room.players.forEach(p => (p.ready = false));
-          room.inputs = [{}, {}];
-          room.pulseQueue = [{}, {}];
-        }
-      }
-
-      if (b.action === 'input') {
-        const clean = {};
-        const validKeys = ['left', 'right', 'up', 'down', 'jump', 'light', 'heavy', 'special', 'super', 'dash', 'guard', 'grab'];
-        for (const k of validKeys) {
-          clean[k] = !!b.input?.[k];
-        }
-        room.inputs[slot] = clean;
-
-        if (Array.isArray(b.pulses)) {
-          for (const pk of b.pulses) {
-            if (validKeys.includes(pk)) {
-              room.pulseQueue[slot][pk] = 3;
-            }
-          }
-        }
-      }
-
-      return send(res, {
-        state: room.state,
-        players: room.players.length,
-        ready: room.players.map(p => p.ready),
-        disconnected: room.players.some(p => Date.now() - p.seen > 15000)
-      });
-    } catch {
-      return send(res, { error: '请求格式错误' }, 400);
-    }
-  }
-
-  let reqPath = decodeURIComponent(url.pathname);
-  if (reqPath === '/') reqPath = '/web-prototype/index.html';
-
-  const file = path.resolve(root, '.' + reqPath);
-  if (file !== root && !file.startsWith(root + path.sep)) {
-    return send(res, { error: '禁止访问' }, 403);
-  }
-
   fs.readFile(file, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      return res.end('404 Not Found');
-    }
-    const ext = path.extname(file).toLowerCase();
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-store'
-    });
+    if (err) { res.writeHead(404); return res.end('Not found'); }
+    res.writeHead(200, {'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control':'no-store'});
     res.end(data);
   });
 });
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [code, r] of rooms) {
-    if (now - r.last > 1800000) {
-      rooms.delete(code);
-      continue;
-    }
-    if (r.state && r.players.length === 2 && r.players.every(p => now - p.seen < 15000)) {
-      const mergedInputs = [0, 1].map(slot => {
-        const inp = { ...r.inputs[slot] };
-        const pq = r.pulseQueue[slot];
-        for (const k of Object.keys(pq)) {
-          if (pq[k] > 0) {
-            inp[k] = true;
-            pq[k]--;
-          }
-        }
-        return inp;
-      });
-      (r.mode === 'fight' ? F : R).step(r.state, mergedInputs);
-    }
+const io = new Server(server, { transports:['websocket'], serveClient:true, maxHttpBufferSize:8192, perMessageDeflate:false });
+function clearInput(room, slot) {
+  room.inputs[slot] = {};
+  room.pulses[slot] = {};
+  room.releases[slot] = {};
+}
+function snapshot(room) {
+  return { code:room.code, mode:room.mode, epoch:room.epoch, state:room.state,
+    players:room.players.filter(Boolean).length, ready:room.players.map(p => !!p?.ready),
+    disconnected:room.players.some(p => !p || !p.socketId) };
+}
+function publish(room, reliable = false) {
+  const target = io.to(room.code);
+  (reliable ? target : target.volatile).emit('state', snapshot(room));
+}
+function playerFor(socket) {
+  const room = rooms.get(socket.data.code);
+  const slot = socket.data.slot;
+  if (!room || !room.players[slot] || room.players[slot].socketId !== socket.id) throw Error('请重新加入房间');
+  return {room, slot, player:room.players[slot]};
+}
+function leave(socket) {
+  const room = rooms.get(socket.data.code), slot = socket.data.slot;
+  if (!room || room.players[slot]?.socketId !== socket.id) return;
+  socket.leave(room.code);
+  room.players[slot] = null;
+  room.state = null;
+  room.players.forEach(p => { if (p) p.ready = false; });
+  [0,1].forEach(i => clearInput(room,i));
+  socket.data = {};
+  if (!room.players.some(Boolean)) rooms.delete(room.code); else publish(room,true);
+}
+io.on('connection', socket => {
+  function handle(event, fn) {
+    socket.on(event, (payload, ack) => {
+      try { const data = fn(payload || {}); if (typeof ack === 'function') ack({ok:true,...data}); }
+      catch (e) { if (typeof ack === 'function') ack({ok:false,error:e.message}); }
+    });
   }
-}, 1000 / 60);
+  function attach(room, slot) {
+    const p = room.players[slot];
+    if (p.socketId && p.socketId !== socket.id) throw Error('该身份已在另一连接使用');
+    p.socketId = socket.id;
+    p.disconnectedAt = null;
+    p.seq = -1;
+    socket.data = {code:room.code, slot};
+    socket.join(room.code);
+    clearInput(room,slot);
+    room.last = Date.now();
+    publish(room,true);
+    return {code:room.code, token:p.token, slot, mode:room.mode, epoch:room.epoch};
+  }
+  handle('resume', b => {
+    if(socket.data.code) throw Error('连接已经加入房间');
+    const room=rooms.get(String(b.code || ''));
+    const slot=room?.players.findIndex(p=>p?.token===b.token);
+    if(!room || slot<0) throw Error('房间或身份已失效，请重新加入');
+    return attach(room,slot);
+  });
+  handle('create', b => {
+    if (socket.data.code) throw Error('请先退出当前房间');
+    let code; do {code = String(crypto.randomInt(100000,1000000));} while (rooms.has(code));
+    const room = {code,mode:b.mode==='race'?'race':'fight',players:[null,null],inputs:[{},{}],pulses:[{},{}],releases:[{},{}],state:null,epoch:0,last:Date.now()};
+    room.players[0] = {token:crypto.randomBytes(24).toString('hex'),id:ids.has(b.character)?b.character:'gpt',ready:false,socketId:null};
+    rooms.set(code,room); return attach(room,0);
+  });
+  handle('join', b => {
+    if (socket.data.code) throw Error('请先退出当前房间');
+    const room = rooms.get(String(b.code).trim());
+    if (!room) throw Error('房间不存在或已过期');
+    const slot = room.players.findIndex(p => !p);
+    if (slot < 0) throw Error('房间已满');
+    room.players[slot] = {token:crypto.randomBytes(24).toString('hex'),id:ids.has(b.character)?b.character:'gpt',ready:false,socketId:null};
+    return attach(room,slot);
+  });
 
-const PORT = process.env.PORT || 4173;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`手机联机服务已启动: http://localhost:${PORT}`);
+  handle('ready', () => {
+    const {room,player} = playerFor(socket);
+    if (room.state && room.state.phase!=='ended') throw Error('对局尚未结束');
+    player.ready = true;
+    if (room.players.every(p => p?.socketId && p.ready)) {
+      room.epoch++;
+      room.state = (room.mode==='fight'?F:R).create({characters:room.players.map(p=>p.id)});
+      room.players.forEach((p,i)=>{p.ready=false;clearInput(room,i);});
+    }
+    room.last=Date.now(); publish(room,true); return {};
+  });
+
+  handle('input', b => {
+    const {room,slot,player}=playerFor(socket);
+    if (!Number.isSafeInteger(b.seq) || b.seq<=player.seq || b.epoch!==room.epoch) return {};
+    player.seq=b.seq;
+    room.inputs[slot]=Object.fromEntries(keys.map(k=>[k,!!b.input?.[k]]));
+    if (Array.isArray(b.pulses)) for(const k of b.pulses) if(actionKeys.includes(k)) room.pulses[slot][k]=Math.min(8,(room.pulses[slot][k]||0)+1);
+    room.last=Date.now(); return {};
+  });
+  handle('release', () => {const {room,slot}=playerFor(socket);clearInput(room,slot);return {};});
+  handle('leave', () => {leave(socket);return {};});
+  socket.on('disconnect', () => {
+    try {const {room,slot,player}=playerFor(socket);player.socketId=null;player.ready=false;player.disconnectedAt=Date.now();clearInput(room,slot);publish(room,true);} catch {}
+  });
 });
+const tick = setInterval(() => {
+  const now=Date.now();
+  for(const [code,r] of rooms) {
+    if(now-r.last>1800000){io.to(code).emit('room:expired');io.in(code).socketsLeave(code);rooms.delete(code);continue;}
+    if(r.state && r.state.phase!=='ended' && r.players.every(p=>p?.socketId)) {
+      const merged=r.inputs.map((held,slot)=>{
+        const result={...held};
+        for(const k of actionKeys){
+          if(r.releases[slot][k]){if(r.pulses[slot][k]>0)result[k]=false;delete r.releases[slot][k];}
+          else if(r.pulses[slot][k]>0){result[k]=true;r.pulses[slot][k]--;r.releases[slot][k]=true;}
+        }
+        return result;
+      });
+      (r.mode==='fight'?F:R).step(r.state,merged);
+    }
+    // Obsolete snapshots may be dropped under backpressure instead of building a queue.
+    publish(r,r.state?.phase==='ended' && !r.endedSent);
+    r.endedSent=r.state?.phase==='ended';
+  }
+},1000/60);
+server.on('close',()=>clearInterval(tick));
+if(require.main===module) server.listen(process.env.PORT||4173,'0.0.0.0',()=>console.log('WebSocket 游戏服务已启动，端口 '+(process.env.PORT||4173)));
+module.exports=server;
+module.exports.io=io;
 
-module.exports = server;
