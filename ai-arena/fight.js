@@ -9,7 +9,7 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
-  const VERSION = '0.3.0';
+  const VERSION = '0.4.0';
   const WIDTH = 1280, HEIGHT = 600, FLOOR = 480, FPS = 60;
   const MAX_HP = 1000, ROUND_FRAMES = 60 * FPS;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -186,7 +186,7 @@
       attacker.hp = Math.max(0, attacker.hp - amount); attacker.stun = 30; attacker.action = 'hit';
       attacker.vx=0;attacker.knockback=sourceX<defender.x?-9:9;attacker.hitFlash=9;
       defender.action = 'idle'; defender.invulnerable = 18; defender.energy = Math.min(100, defender.energy + 15);
-      state.stats[target].damage += amount; state.freeze = 8;
+      state.stats[target].damage += amount; state.freeze = Math.max(state.freeze, 8);
       state.announcement = '反制成功'; particle(state, 'counter', defender.x, defender.y - 70, '#f4ac83', 24);
       return;
     }
@@ -223,10 +223,11 @@
         defender.knockdown = 36; defender.stun = 0; defender.action = 'knockdown';
         defender.receivedCombo = 0; defender.guard = false;
       }
-      state.freeze = Math.max(state.freeze, move.damage > 150 ? 7 : move.damage > 70 ? 4 : 2);
+      state.freeze = Math.max(state.freeze, move.damage > 150 ? 8 : move.damage > 70 ? 5 : 3);
       state.announcement = attacker.combo > 1 ? `${attacker.combo} HIT COMBO` : '命中';
       particle(state, 'hit', defender.x, defender.y - 74, characters.find(c => c.id === attacker.id).color, 16);
       state.effects[state.effects.length-1].damage=damage;
+      state.effects[state.effects.length-1].trauma=move.damage>150?.85:move.damage>70?.55:.35;
       if(move.knockdown||defender.knockdown){state.stats[owner].knockdowns++;}
     }
     attacker.energy = Math.min(100, attacker.energy + (blocking ? 3 : move.energy));
@@ -245,7 +246,7 @@
     } else { state.phase = 'roundOver'; state.phaseFrames = 150; }
   }
 
-  function step(state, inputs = [{}, {}]) {
+  function step(state, inputs = [{}, {}], predictionSlot = null) {
     if (state.phase === 'ended') return state;
     state.frame++;
     state.effects = state.effects.filter(e => --e.life > 0);
@@ -276,11 +277,12 @@
       });
       return state;
     }
+    state.combatFrame=(state.combatFrame||0)+1;
     state.timeFrames--;
     state.timer = Math.max(0, state.timeFrames / FPS);
     const [a, b] = state.fighters;
-    stepFighter(state, a, b, input[0]);
-    stepFighter(state, b, a, input[1]);
+    if(predictionSlot===null||predictionSlot===0)stepFighter(state, a, b, input[0]);
+    if(predictionSlot===null||predictionSlot===1)stepFighter(state, b, a, input[1]);
     // Pushboxes prevent ground crossing, but jumping can switch sides.
     if (Math.abs(a.y - b.y) < 80 && Math.abs(a.x - b.x) < 57) {
       const left=a.x<=b.x?a:b,right=left===a?b:a;
@@ -293,7 +295,7 @@
     const events = [];
     for (const f of state.fighters) {
       const m = frameData[f.id][f.action];
-      if (!m || !m.damage || m.projectile || m.counter || !active(f)) continue;
+      if (predictionSlot!==null || !m || !m.damage || m.projectile || m.counter || !active(f)) continue;
       const box = attackBox(f, m); state.hitboxes.push(box);
       const target = 1 - f.index;
       if (!f.hitVictims.includes(target) && overlaps(box, state.hurtboxes[target])) {
@@ -305,7 +307,7 @@
       p.x += p.dir * p.speed; p.life--;
       const box = { x: p.x - p.radius, y: p.y - p.radius, w: p.radius * 2, h: p.radius * 2, owner: p.owner };
       state.hitboxes.push(box);
-      if (overlaps(box, state.hurtboxes[1 - p.owner])) {
+      if (predictionSlot===null && overlaps(box, state.hurtboxes[1 - p.owner])) {
         events.push({ owner: p.owner, target: 1 - p.owner, move: p.move, sourceX: p.x - p.dir * 50 }); p.life = 0;
       }
     }
@@ -317,6 +319,7 @@
       if (m && ++f.actionFrame >= m.total) { f.action = 'idle'; f.actionFrame = 0; f.crouch = false; }
       f.energy = clamp(f.energy, 0, 100); f.hp = clamp(f.hp, 0, f.maxHp);
     }
+    if(predictionSlot!==null)return state;
     if (a.hp <= 0 || b.hp <= 0) roundEnd(state, a.hp === b.hp ? null : a.hp > b.hp ? 0 : 1, 'K.O.');
     else if (state.timeFrames <= 0) roundEnd(state, a.hp === b.hp ? null : a.hp > b.hp ? 0 : 1, 'TIME UP');
     return state;

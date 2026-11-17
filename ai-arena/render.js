@@ -27,19 +27,40 @@ line(c,[[0,350],[1280,350]],'#4f799255',1);box(c,445,175,390,77,8,'#162a3e');txt
  }
  c.drawImage(fightBackground,0,0);
 }
-function fight(c,s,debug){
-background(c);
-c.save();
-const impact=(s.effects||[]).find(e=>e.type==='hit'&&e.life>e.maxLife-6);
-if(impact){const magnitude=impact.damage>=120?5:2.5;c.translate(Math.sin(s.frame*5.7)*magnitude,Math.cos(s.frame*4.3)*magnitude*.5);}
-
+// Real-time camera feedback never modifies authoritative physics.
+const feedbackStates=new WeakMap();
+const feedbackOptions={shakeStrength:1,reduceFlashing:false};
+function resetFeedback(c){feedbackStates.delete(c);}
+function cameraFeedback(c,s,now){
+ let v=feedbackStates.get(c);
+ if(!v||s.frame<v.frame){v={time:now,frame:s.frame,lastId:0,trauma:0,x:0,y:0};feedbackStates.set(c,v);}
+ const dt=Math.max(0,(now-v.time)/1000);v.time=now;v.frame=s.frame;
+ v.trauma=Math.max(0,v.trauma-dt*1.8);
+ for(const e of s.effects||[]){
+  if(e.id<=v.lastId)continue;
+  v.lastId=e.id;
+  const strength=e.trauma??(e.type==='counter'?.8:e.type==='block'?.18:e.type==='hit'?.35:0);
+  v.trauma=Math.min(1,v.trauma+strength);
+ }
+ const reduced=g.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+ const amplitude=v.trauma*v.trauma*12*(reduced?0:feedbackOptions.shakeStrength),t=now/1000;
+ v.x=amplitude*(Math.sin(t*71)*.65+Math.sin(t*113)*.35);
+ v.y=amplitude*(Math.sin(t*89+.8)*.6+Math.sin(t*137)*.4)*.65;
+ if(amplitude===0){v.x=0;v.y=0;}
+ return v;
+}
+function fight(c,s,debug,now=performance.now()){
+ const camera=cameraFeedback(c,s,now);
+ c.fillStyle='#0e1931';c.fillRect(0,0,1280,720);
+ c.save();c.translate(camera.x,camera.y);
+ background(c);
 for(let f of s.fighters){c.fillStyle='#0005';c.beginPath();c.ellipse(f.x,485,47,10,0,0,Math.PI*2);c.fill()}
 for(let p of s.projectiles||[]){let col=C[s.fighters[p.owner]?.id]?.[0]||'#abf5da';let radius=p.radius||17;c.shadowBlur=25;c.shadowColor=col;c.fillStyle=col;c.beginPath();c.ellipse(p.x,p.y,radius*1.8,radius,0,0,Math.PI*2);c.fill();c.shadowBlur=0;line(c,[[p.x-(p.dir||1)*45,p.y],[p.x,p.y]],col,5)}
 for(let f of s.fighters){
- if(f.action==='dash'||f.action==='special'&&Math.abs(f.vx)>4){for(let i=3;i>0;i--){c.globalAlpha=.08+(3-i)*.04;fighter(c,{...f,x:f.x-f.facing*i*17},.85,s.frame-i*2);}c.globalAlpha=1;}
- c.globalAlpha=f.invulnerable>0&&Math.floor(s.frame/3)%2?.45:1;
- fighter(c,f,.85,s.frame);c.globalAlpha=1;
- if(f.hitFlash>0){c.globalAlpha=f.hitFlash/30;box(c,f.x-25,f.y-140,50,140,10,'#fff');c.globalAlpha=1;}
+ if(f.action==='dash'||f.action==='special'&&Math.abs(f.vx)>4){for(let i=3;i>0;i--){c.globalAlpha=.08+(3-i)*.04;fighter(c,{...f,x:f.x-f.facing*i*17},.85,(s.combatFrame??s.frame)-i*2);}c.globalAlpha=1;}
+ c.globalAlpha=f.invulnerable>0&&Math.floor((s.combatFrame??s.frame)/3)%2?.45:1;
+ fighter(c,f,.85,s.combatFrame??s.frame);c.globalAlpha=1;
+ if(f.hitFlash>0&&!feedbackOptions.reduceFlashing&&!g.matchMedia?.('(prefers-reduced-motion: reduce)').matches){c.globalAlpha=f.hitFlash/30;box(c,f.x-25,f.y-140,50,140,10,'#fff');c.globalAlpha=1;}
 }
 for(let e of s.effects||[]){
  const progress=1-e.life/e.maxLife,spread=12+progress*58;
@@ -56,7 +77,11 @@ box(c,551,17,178,111,12,'#0c1827cc');txt(c,`${Math.ceil(s.timer)}`,640,75,49,'#f
 if(s.phase==='ended'){box(c,355,285,570,170,18,'#091728ee');txt(c,'K.O.',640,357,65,'#ffe2b3','center');txt(c,`PLAYER ${s.winner+1} 获胜 · ${s.wins.join(' : ')}`,640,409,25,'#d9f8e4','center');}
 if(s.phase==='countdown'||s.phase==='roundOver'){box(c,390,310,500,75,12,'#0c172add');txt(c,s.announcement||'READY',640,360,37,'#d6ffdc','center')}
 }
-g.ArenaRender={portrait,hero,fighter,fight,box,txt,colors:C};
+function configureFeedback(options={}){
+ if(Number.isFinite(options.shakeStrength))feedbackOptions.shakeStrength=Math.max(0,Math.min(1,options.shakeStrength));
+ if(typeof options.reduceFlashing==='boolean')feedbackOptions.reduceFlashing=options.reduceFlashing;
+}
+g.ArenaRender={portrait,hero,fighter,fight,box,txt,colors:C,configureFeedback,resetFeedback};
 })(window);
 (function(){
 const R=window.ArenaRender;

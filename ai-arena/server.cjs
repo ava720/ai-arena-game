@@ -37,6 +37,7 @@ function clearInput(room, slot) {
 }
 function snapshot(room) {
   return { code:room.code, mode:room.mode, epoch:room.epoch, state:room.state,
+    inputAck:room.players.map((p,i)=>({seq:p?.appliedSeq??-1,input:p?.appliedInput||{}})),
     players:room.players.filter(Boolean).length, ready:room.players.map(p => !!p?.ready),
     disconnected:room.players.some(p => !p || !p.socketId) };
 }
@@ -73,7 +74,7 @@ io.on('connection', socket => {
     if (p.socketId && p.socketId !== socket.id) throw Error('该身份已在另一连接使用');
     p.socketId = socket.id;
     p.disconnectedAt = null;
-    p.seq = -1;
+    p.seq = -1;p.appliedSeq=-1;p.appliedInput={};
     socket.data = {code:room.code, slot};
     socket.join(room.code);
     clearInput(room,slot);
@@ -81,6 +82,7 @@ io.on('connection', socket => {
     publish(room,true);
     return {code:room.code, token:p.token, slot, mode:room.mode, epoch:room.epoch};
   }
+  handle('net:ping', () => ({time:performance.now()}));
   handle('resume', b => {
     if(socket.data.code) throw Error('连接已经加入房间');
     const room=rooms.get(String(b.code || ''));
@@ -131,12 +133,11 @@ io.on('connection', socket => {
     try {const {room,slot,player}=playerFor(socket);player.socketId=null;player.ready=false;player.disconnectedAt=Date.now();clearInput(room,slot);publish(room,true);} catch {}
   });
 });
-let previousTick=performance.now(),accumulator=0;
-const STEP_MS=1000/60;
+const FixedStep=require('./fixed-step.cjs');
+const physicsClock=new FixedStep(F.FPS,6);
+physicsClock.advance(performance.now());
 const tick = setInterval(() => {
-  const clock=performance.now();
-  accumulator=Math.min(100,accumulator+clock-previousTick);previousTick=clock;
-  const steps=Math.floor(accumulator/STEP_MS);accumulator-=steps*STEP_MS;
+  const steps=physicsClock.advance(performance.now());
   const now=Date.now();
   for(const [code,r] of rooms) {
     if(now-r.last>1800000){io.to(code).emit('room:expired');io.in(code).socketsLeave(code);rooms.delete(code);continue;}
@@ -150,6 +151,7 @@ const tick = setInterval(() => {
         }
         return result;
       });
+      r.players.forEach((p,i)=>{p.appliedInput=merged[i];if(!Object.values(r.pulses[i]).some(n=>n>0))p.appliedSeq=p.seq;});
       (r.mode==='fight'?F:R).step(r.state,merged);
       }
     }

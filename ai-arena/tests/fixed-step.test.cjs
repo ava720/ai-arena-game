@@ -1,0 +1,7 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const Clock=require('../fixed-step.cjs'),F=require('../fight.js');
+function run(rate){const c=new Clock(),s=F.create();c.advance(0);for(let i=1;i<=rate*10;i++){const n=c.advance(i*1000/rate);for(let j=0;j<n;j++)F.step(s,[{right:true},{}]);}return {c,s};}
+test('30 and 144 Hz scheduling produces identical 600 authoritative ticks',()=>{const a=run(30),b=run(144);assert.equal(a.c.ticks,600);assert.equal(b.c.ticks,600);assert.deepEqual(a.s,b.s);});
+test('stall bounds catch-up, records dropped time and keeps fractional remainder',()=>{const c=new Clock();c.advance(0);assert.equal(c.advance(1005),6);assert.ok(c.droppedMs>=899);assert.ok(c.alpha>=0&&c.alpha<1);assert.equal(c.advance(1005),0);assert.equal(c.advance(1000),0);});
+test('hit-stop freezes physical pose, attack frames and timer, but buffers presses',()=>{const s=F.create();for(let i=0;i<180;i++)F.step(s);s.fighters[0].x=550;s.fighters[1].x=635;F.step(s,[{light:true},{}]);while(!s.lastHits.length)F.step(s);assert.equal(s.freeze,3);const pose=s.fighters.map(f=>[f.x,f.y,f.actionFrame,f.stun]),time=s.timeFrames;for(let i=0;i<3;i++)F.step(s,[{heavy:i===0},{}]);assert.deepEqual(s.fighters.map(f=>[f.x,f.y,f.actionFrame,f.stun]),pose);assert.equal(s.timeFrames,time);assert.equal(s.freeze,0);F.step(s);assert.equal(s.fighters[0].action,'heavy');assert.equal(s.timeFrames,time-1);});

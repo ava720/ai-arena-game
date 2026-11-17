@@ -16,11 +16,17 @@ test('network-shaped snapshot retains hit flash, recoil and effect through actua
  const ctx=new Proxy({}, {get(t,k){if(k in t)return t[k];if(k==='createLinearGradient'||k==='createRadialGradient')return ()=>({addColorStop(){}});if(k==='save')return ()=>{stack++};if(k==='restore')return ()=>{stack--};return (...args)=>calls.push({op:k,args});},set(t,k,v){t[k]=v;return true;}});
  const scope={window:{AIFight:F},document:{createElement:()=>({getContext:()=>ctx})},console};
  vm.runInNewContext(fs.readFileSync(require.resolve('../render.js'),'utf8'),scope);
- scope.window.ArenaRender.fight(ctx,visual,false);
+ scope.window.ArenaRender.fight(ctx,visual,false,100);
  const impact=s.effects.find(e=>e.type==='hit');
  assert.ok(calls.some(c=>c.op==='translate'&&Math.abs(c.args[0])<=5&&c.args[0]!==0),'screen shake');
  assert.ok(calls.some(c=>c.op==='roundRect'&&c.args[2]===50&&c.args[3]===140),'hit flash overlay');
  assert.ok(calls.some(c=>c.op==='fillText'&&c.args[0]==='−'+impact.damage),'floating damage');
  assert.equal(stack,0,'canvas transform restored');
+ calls.length=0;scope.window.ArenaRender.fight(ctx,visual,false,130);
+ const moving=calls.find(c=>c.op==='translate');assert.ok(moving.args.some(n=>n!==0),'shake advances while physics is frozen');
+ calls.length=0;scope.window.ArenaRender.fight(ctx,visual,false,2100);
+ assert.deepEqual(calls.find(c=>c.op==='translate').args,[0,0],'same snapshot cannot retrigger impact');
+ scope.window.ArenaRender.resetFeedback(ctx);scope.window.ArenaRender.configureFeedback({shakeStrength:0});calls.length=0;
+ scope.window.ArenaRender.fight(ctx,visual,false,2200);assert.deepEqual(calls.find(c=>c.op==='translate').args,[0,0]);
  const before=s.fighters[1].x;for(let i=0;i<6;i++)F.step(s,[{},{left:true}]);assert.ok(s.fighters[1].x>before,'authoritative knockback');
 });

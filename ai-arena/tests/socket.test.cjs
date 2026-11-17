@@ -9,16 +9,17 @@ test('WebSocket rooms, real-time inputs, pulses, pause/rejoin and leave',async()
  let clients=[];async function connect(){let c=client(url,{transports:['websocket'],forceNew:true,reconnection:false});clients.push(c);await new Promise((r,j)=>{c.once('connect',r);c.once('connect_error',j)});return c}
  try{
  const a=await connect(),b=await connect(),third=await connect();let sa,sb;a.on('state',d=>sa=d);b.on('state',d=>sb=d);
+ assert.ok((await emit(a,'net:ping')).ok);
  const room=await emit(a,'create',{mode:'fight',character:'gpt'});assert.ok(room.ok);
  const guest=await emit(b,'join',{code:room.code,character:'deepseek'});assert.ok(guest.ok);
  assert.equal((await emit(third,'join',{code:room.code})).ok,false);
  await emit(a,'ready');await emit(b,'ready');await wait(70);assert.equal(sa.epoch,1);assert.ok(sb.state);
  for(let i=0;i<150&&sa.state.phase!=='playing';i++)await wait(50);assert.equal(sa.state.phase,'playing');let x=sa.state.fighters[0].x;
  await emit(a,'input',{epoch:1,seq:1,input:{right:true},pulses:[]});await wait(150);
- assert.ok(sa.state.fighters[0].x>x);
+ assert.ok(sa.state.fighters[0].x>x);assert.equal(sa.inputAck[0].seq,1);assert.equal(sa.inputAck[0].input.right,true);
  await emit(a,'release');let stable=sa.state.fighters[0].x;await wait(100);assert.equal(sa.state.fighters[0].x,stable);
  // A complete press/release arriving between server ticks must still trigger a jump.
- await emit(a,'input',{epoch:1,seq:2,input:{jump:true},pulses:['jump']});await emit(a,'input',{epoch:1,seq:3,input:{},pulses:[]});await wait(100);assert.ok(sa.state.fighters[0].y<480);
+ await emit(a,'input',{epoch:1,seq:2,input:{jump:true},pulses:['jump']});await emit(a,'input',{epoch:1,seq:3,input:{},pulses:[]});await wait(100);assert.ok(sa.state.fighters[0].y<480);assert.equal(sa.inputAck[0].seq,3);
  b.disconnect();await wait(100);let frame=sa.state.frame;await wait(100);assert.equal(sa.state.frame,frame);assert.equal(sa.disconnected,true);
  const rejoined=await connect();assert.ok((await emit(rejoined,'resume',{code:room.code,token:guest.token})).ok);await wait(100);assert.ok(sa.state.frame>frame);
  await emit(rejoined,'leave');await wait(60);assert.equal(sa.state,null);assert.equal(sa.players,1);

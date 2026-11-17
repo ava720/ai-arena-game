@@ -6,7 +6,7 @@ const requiredModules = [
   ['AIFight', window.AIFight?.frameData],
   ['AIRace', window.AIRace?.step],
   ['ArenaRender', window.ArenaRender?.fight],
-  ['ArenaView', window.ArenaView?.Buffer],
+  ['ArenaView', window.ArenaView?.Predictor],
   ['Socket.IO', window.io]
 ];
 const missingModules=requiredModules.filter(([,value])=>!value).map(([name])=>name);
@@ -23,20 +23,22 @@ let seq = 0;
 let joining = false;
 const screenCanvas=$('screen');
 const screenContext=screenCanvas.getContext('2d',{alpha:false});
-const viewBuffer=new ArenaView.Buffer(22);
+const viewBuffer=new ArenaView.Buffer(50);
+let predictor=null,networkRTT=100;
 let renderId=0, latestPacket=null, receivedAt=0;
 let frameCount=0, statsStart=0, renderCost=0;
 const performanceStats={fps:0,renderMs:0,snapshotAgeMs:0};
 window.ArenaPerformance=performanceStats;
 function setText(id,value){const el=$(id);if(el.textContent!==value)el.textContent=value;}
-function stopRendering(){cancelAnimationFrame(renderId);renderId=0;viewBuffer.reset();latestPacket=null;}
+function stopRendering(){cancelAnimationFrame(renderId);renderId=0;viewBuffer.reset();predictor?.reset();latestPacket=null;ArenaRender.resetFeedback(screenContext);}
 function renderFrame(now){
  renderId=0;
  if(document.hidden||!session||!latestPacket?.state)return;
- const visual=viewBuffer.sample(now);
+ const interpolated=viewBuffer.sample(now);
+ const visual=interpolated&&predictor?predictor.apply(interpolated,now):interpolated;
  if(visual){
   const start=performance.now();
-  (session.mode==='fight'?ArenaRender.fight:ArenaRender.race)(screenContext,visual,false);
+  (session.mode==='fight'?ArenaRender.fight:ArenaRender.race)(screenContext,visual,false,now);
   renderCost+=performance.now()-start;frameCount++;
   if(!statsStart)statsStart=now;
   if(now-statsStart>=1000){performanceStats.fps=Math.round(frameCount*1000/(now-statsStart));performanceStats.renderMs=+(renderCost/frameCount).toFixed(2);screenCanvas.dataset.fps=performanceStats.fps;screenCanvas.dataset.renderMs=performanceStats.renderMs;frameCount=0;renderCost=0;statsStart=now;}
@@ -64,7 +66,9 @@ function request(event, payload = {}) {
 }
 function sendInput() {
   if(!session || !socket.connected) return;
-  socket.emit('input',{epoch:session.epoch,seq:++seq,input:{...input},pulses:Array.from(pulseBuffer)});
+  const command={epoch:session.epoch,seq:++seq,input:{...input},pulses:Array.from(pulseBuffer)};
+  predictor?.input(command.seq,command.input,command.pulses,performance.now());
+  socket.emit('input',command);
   pulseBuffer.clear();
 }
 function clearControls(notify = true) {
@@ -72,7 +76,7 @@ function clearControls(notify = true) {
   pulseBuffer.clear();
   activePointers.forEach(r=>r.btn.classList.remove('active'));
   activePointers.clear();
-  if(notify && session && socket.connected) socket.emit('release',{});
+  if(notify && session && socket.connected){sendInput();socket.emit('release',{});}
 }
 function buildGamepad(mode) {
   const pad = $('pad');
@@ -200,6 +204,8 @@ socket.on('state',d=>{
   if(!session || d.code!==session.code) return;
   if(session.epoch!==d.epoch){session.epoch=d.epoch;clearControls();viewBuffer.reset();}
   latestPacket=d;receivedAt=performance.now();viewBuffer.push(d,receivedAt);
+  if(!predictor||predictor.slot!==session.slot||predictor.mode!==session.mode)predictor=new ArenaView.Predictor(session.mode==='fight'?AIFight:AIRace,session.slot,session.mode);
+  predictor.setRTT(networkRTT);predictor.reconcile(d,receivedAt);
   const ready=!!d.ready[session.slot];
   $('ready').disabled=ready;
   setText('ready',ready?'已准备，等待对手':'我已准备好（开始对局）');
@@ -250,3 +256,17 @@ socket.on('room:expired',()=>leaveView('房间已过期，请重新创建'));
 window.addEventListener('blur',()=>clearControls());
 window.addEventListener('pagehide',()=>clearControls());
 document.addEventListener('visibilitychange',()=>{if(document.hidden){clearControls();cancelAnimationFrame(renderId);renderId=0;}else startRendering();});
+
+// RTT sampling is telemetry, not state polling; only one probe can be in flight.
+let pingPending=false,hasRTT=false;
+function measureRTT(){
+ if(!socket.connected||pingPending)return;
+ pingPending=true;const start=performance.now();
+ socket.timeout(3000).emit('net:ping',{},(err,data)=>{
+  pingPending=false;if(err||!data?.ok)return;
+  const sample=performance.now()-start;networkRTT=hasRTT?networkRTT*.6+sample*.4:sample;hasRTT=true;
+  predictor?.setRTT(networkRTT);performanceStats.rttMs=Math.round(networkRTT);
+ });
+}
+socket.on('connect',measureRTT);
+setInterval(measureRTT,2000);
