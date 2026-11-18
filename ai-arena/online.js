@@ -227,8 +227,7 @@ async function connect(action) {
   try {
     const mode=$('mode').value;
     const character=$('character').value;
-    $('status').textContent='正在准备游戏图片…';
-    await ArenaRender.preloadMatchAssets(action==='create'?mode:undefined);
+    $('status').textContent=action==='create'?'正在创建房间…':'正在加入房间…';
     session=await request(action,{code,mode,character});
     seq=0;
     $('mode').value=session.mode;
@@ -250,6 +249,7 @@ async function sendReady() {
   $('result-ready').disabled=true;
   try {
     // A joined room's mode is assigned by the server, not the lobby selector.
+    $('status').textContent='正在加载对局图片…';
     await ArenaRender.preloadMatchAssets(room.mode);
     if(session===room)await request('ready');
   } catch(e) {
