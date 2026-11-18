@@ -216,6 +216,8 @@ window.visualViewport?.addEventListener('resize',syncViewport);
 document.addEventListener('fullscreenchange',syncViewport);
 document.addEventListener('webkitfullscreenchange',syncViewport);
 syncViewport();
+// Start decoding in the lobby. A failed attempt can be retried by tapping a room button.
+if (window.Image) ArenaRender.preloadMatchAssets('fight').catch(()=>{});
 async function connect(action) {
   if(joining || session) return;
   const code=$('code').value.trim();
@@ -223,7 +225,11 @@ async function connect(action) {
   enterPresentation();
   joining=true;
   try {
-    session=await request(action,{code,mode:$('mode').value,character:$('character').value});
+    const mode=$('mode').value;
+    const character=$('character').value;
+    $('status').textContent='正在准备游戏图片…';
+    await ArenaRender.preloadMatchAssets(action==='create'?mode:undefined);
+    session=await request(action,{code,mode,character});
     seq=0;
     $('mode').value=session.mode;
     clearControls();
@@ -237,11 +243,23 @@ async function connect(action) {
 $('create').onclick=()=>connect('create');
 $('join').onclick=()=>connect('join');
 async function sendReady() {
+  const room=session;
+  if(!room)return;
   $('ready').disabled=true;
   $('hud-ready').disabled=true;
   $('result-ready').disabled=true;
-  try { await request('ready'); }
-  catch(e) { $('status').textContent=e.message; $('hud-text').textContent=e.message; $('ready').disabled=false; $('hud-ready').disabled=false; }
+  try {
+    // A joined room's mode is assigned by the server, not the lobby selector.
+    await ArenaRender.preloadMatchAssets(room.mode);
+    if(session===room)await request('ready');
+  } catch(e) {
+    if(session!==room)return;
+    $('status').textContent=e.message;
+    $('hud-text').textContent=e.message;
+    $('ready').disabled=false;
+    $('hud-ready').disabled=false;
+    $('result-ready').disabled=false;
+  }
 }
 $('ready').onclick=sendReady;
 $('hud-ready').onclick=sendReady;
